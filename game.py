@@ -36,7 +36,7 @@ import pygame
 
 # Import our sensor layer — works with real glove or simulation
 try:
-    from sensor_processing import SensorProcessor, SimulatedSensorProcessor
+    from data_preprocessing import SensorProcessor, SimulatedSensorProcessor
     SENSOR_AVAILABLE = True
 except ImportError:
     SENSOR_AVAILABLE = False
@@ -46,7 +46,7 @@ except ImportError:
 # User configuration
 # ──────────────────────────────────────────────────────────────────────────────
 
-USE_REAL_GLOVE = False    # Set True to connect via BLE; False uses simulation
+USE_REAL_GLOVE = True    # Set True to connect via BLE; False uses simulation
 DIFFICULTY     = 1        # 1 = easy (straight), 2 = hard (peaks)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -153,7 +153,7 @@ class CalibrationScreen:
             pose_key, _, _, _ = self.POSES[self.pose_idx]
             # Estimate progress from the internal accumulation buffer
             samples = self.proc._calib_accum[pose_key]
-            from sensor_processing import CALIBRATION_SAMPLES
+            from data_preprocessing import CALIBRATION_SAMPLES
             self._progress = min(1.0, len(samples) / CALIBRATION_SAMPLES)
 
             if self._progress >= 1.0:
