@@ -114,7 +114,7 @@ if __name__ == "__main__":
 
     # Channels to exclude from plotting (0-indexed)
     # Here: only channel index 5 (Channel 6) is plotted
-    exclude_channels = {0, 6, 7, 10, 11, 12, 13, 14, 15, 16}
+    exclude_channels = {7,14,15,16,17,18,19,20}
 
     # --------------------
     # Set up real-time plot
