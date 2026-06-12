@@ -55,9 +55,9 @@ C_BAR_BG      = (40,  50,  70)
 C_BAR_FILL    = (50, 200, 150)
 C_OBSTACLE    = (220,  80,  60)
 
-WIRE_THICKNESS  = 50
+WIRE_THICKNESS  = 70
 RING_RADIUS     = 8
-SENSITIVITY     = 1.5
+SENSITIVITY     = 2.0
 LEVEL_TIME_LIMIT = 60.0   # seconds — level 1 time limit
 OBSTACLE_RADIUS  = 10     # pixels — level 2 obstacle size
 
@@ -250,7 +250,7 @@ class Ring:
 
     def update(self, aperture: float, dt: float):
         target_off    = max(-1.0, min(1.0, aperture * SENSITIVITY))
-        alpha         = min(1.0, dt * 20)
+        alpha         = min(1.0, dt * 60)
         self.perp_off = self.perp_off + alpha * (target_off - self.perp_off)
         self.touching = abs(self.perp_off) > 0.85
         if self.touching:

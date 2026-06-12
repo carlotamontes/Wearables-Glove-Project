@@ -62,7 +62,7 @@ CHARACTERISTIC_UUID    = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 FINGER_CHANNEL_INDICES = [0]                    # 1 channel now; change to [0,1,2,3,4] for full glove
 
 # Moving-average window (number of samples).  At ~100 Hz this is 200 ms.
-MOVING_AVG_WINDOW = 20
+MOVING_AVG_WINDOW = 5
 
 # Samples averaged when recording a calibration point
 CALIBRATION_SAMPLES = 100
