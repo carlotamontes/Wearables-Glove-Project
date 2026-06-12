@@ -54,7 +54,7 @@ async def bleak_main():
     """
     print("Scanning for BLE devices... - Only one channel.py:55")
     devices = await BleakScanner.discover()
-    device = next((d for d in devices if d.name and "bluetoothterminal" in d.name.lower()), None)
+    device = next((d for d in devices if d.name and "group8" in d.name.lower()), None)
 
     if not device:
         print("Device not found. Exiting BLE thread. - Only one channel.py:60")
@@ -114,7 +114,8 @@ if __name__ == "__main__":
 
     # Channels to exclude from plotting (0-indexed)
     # Here: only channel index 5 (Channel 6) is plotted
-    exclude_channels = {7,14,15,16,17,18,19,20}
+    exclude_channels = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20}
+    #
 
     # --------------------
     # Set up real-time plot
