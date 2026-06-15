@@ -1,78 +1,102 @@
-import asyncio 
-import threading
-import queue
-import time
-import csv
-from datetime import datetime
+# ============================================
+# BIBLIOTECA DE IMPORTAÇÕES
+# ============================================
+import asyncio  # Para programação assíncrona (executar BLE em thread separada)
+import threading  # Para criar threads de execução
+import queue  # Para fila thread-safe de dados
+import time  # Para funções de tempo
+import csv  # Para escrever ficheiros CSV
+from datetime import datetime  # Para timestamps
 
-import matplotlib.pyplot as plt
-from bleak import BleakScanner, BleakClient
-import numpy as np  # for moving average
+import matplotlib.pyplot as plt  # Para criar gráficos em tempo real
+from bleak import BleakScanner, BleakClient  # Biblioteca para comunicação Bluetooth Low Energy (BLE)
+import numpy as np  # Para operações matemáticas e arrays
 
+# ============================================
+# CONSTANTES E CONFIGURAÇÕES
+# ============================================
+# UUID da característica Bluetooth que vamos ler (identificador único do serviço BLE)
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-# Thread-safe queue to store data for plotting and CSV-writing
+# Fila thread-safe para armazenar dados recebidos do BLE (será lida pela thread principal para plotar e guardar em CSV)
 data_queue = queue.Queue()
 
-# Event to signal when to stop BLE notifications
+# Evento para sinalizar à thread BLE que deve parar de receber notificações
 stop_event = threading.Event() 
 
-# Name for CSV file
+# Nome do ficheiro CSV com timestamp para evitar sobrescrever ficheiros anteriores
 csv_filename = f'adc_data_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
 
-# Moving average window (in number of samples)
-MOVING_AVG_WINDOW = 20  # adjust as you like
+# Tamanho da janela para cálculo de média móvel (suaviza o gráfico) - número de amostras
+MOVING_AVG_WINDOW = 20  # Pode ser ajustado para mais/menos suavização
+
 
 
 def notification_handler(sender, data):
     """
-    This callback executes in Bleak's event loop (the separate thread).
-    It parses data and places it into the queue. The main thread will
-    handle CSV-writing and plotting.
+    Callback executado quando o dispositivo BLE envia novos dados.
+    
+    Esta função:
+    1. Descodifica os dados recebidos do BLE
+    2. Cria um timestamp do momento em que foram recebidos
+    3. Converte os valores para floats
+    4. Coloca os dados na fila para a thread principal processar
+    
+    NOTA: Esta função executa na event loop do Bleak (thread separada),
+    não na thread principal. Por isso usamos a fila thread-safe.
     """
-    # Assume the data is a comma-separated string, e.g. "-1.00, 2.50, 3.00, ..."
+    # Descodifica os dados (assumindo que vêm no formato: "-1.00, 2.50, 3.00, ...")
+    # e separa os valores pela vírgula
     decoded_data = data.decode().split(',')
-    timestamp = datetime.now()
+    timestamp = datetime.now()  # Regista o tempo exato de receção
 
     try:
-        # Parse each value as a float
+        # Converte cada valor (string) para número flutuante
         values = [float(x) for x in decoded_data]
     except ValueError as e:
-        # If there's any invalid float, skip and log the error
+        # Se algum valor não for um número válido, pula este e regista o erro
         print(f"Skipping invalid data: {decoded_data}, error: {e} - Only one channel.py:42")
         return
 
-    # Put data (timestamp + values) into the queue for the main thread
+    # Coloca os dados (timestamp + lista de valores) na fila para a thread principal processar
     data_queue.put((timestamp, values))
 
 
 async def bleak_main():
     """
-    - Discover and connect to the BLE device
-    - Start notifications
-    - Remain active until stop_event is signaled
+    Função assíncrona principal para comunicação BLE.
+    
+    Realiza:
+    1. Procura de dispositivos Bluetooth disponíveis
+    2. Conecta ao dispositivo com nome contendo "bluetoothterminal"
+    3. Inicia as notificações BLE (callbacks quando chegam dados)
+    4. Mantém a conexão aberta até receber o sinal de stop
+    5. Fecha a conexão
     """
     print("Scanning for BLE devices... - Only one channel.py:55")
+    # Descobre todos os dispositivos Bluetooth Low Energy disponíveis
     devices = await BleakScanner.discover()
-    device = next((d for d in devices if d.name and "group8" in d.name.lower()), None)
+    device = next((d for d in devices if d.name and "bluetoothterminal" in d.name.lower()), None)
 
     if not device:
+        # Se nenhum dispositivo foi encontrado, sai
         print("Device not found. Exiting BLE thread. - Only one channel.py:60")
         return
 
     print(f"Found device: {device.name} ({device.address}). Attempting to connect... - Only one channel.py:63")
+    # Cria uma conexão com o dispositivo BLE
     async with BleakClient(device.address) as client:
         print(f"Connected to {device.name}! - Only one channel.py:65")
 
-        # Start BLE notifications
+        # Inicia notificações: cada vez que chegam dados, chama notification_handler
         await client.start_notify(CHARACTERISTIC_UUID, notification_handler)
         print("Notifications started. Waiting for stop_event... - Only one channel.py:69")
 
-        # Keep the async loop alive until we set stop_event
+        # Mantém a conexão aberta enquanto não receber sinal de paragem
         while not stop_event.is_set():
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.1)  # Pequena pausa para evitar uso excessivo de CPU
 
-        # Optionally stop notifications if desired
+        # Ao receber sinal de paragem, desativa as notificações
         await client.stop_notify(CHARACTERISTIC_UUID)
         print("Stopped notifications. - Only one channel.py:77")
 
@@ -80,77 +104,96 @@ async def bleak_main():
 
 
 def run_bleak_loop():
-    """Target for the separate thread to run BLE asynchronously."""
+    """
+    Função de alvo para executar em thread separada.
+    Permite que a comunicação BLE assíncrona funcione sem bloquear a thread principal.
+    """
+    # Inicia um novo event loop assíncrono nesta thread e executa bleak_main
     asyncio.run(bleak_main())
 
 
 def smooth_with_moving_average(channel_vals: np.ndarray, window: int) -> np.ndarray:
     """
-    Moving average with edge padding that always returns an array
-    of the same length as channel_vals, for any window size.
+    Suaviza dados usando média móvel.
+    
+    A média móvel funciona calculando a média de um pequeno "janela" de valores.
+    Isto remove ruído e torna o gráfico mais legível.
+    
+    Args:
+        channel_vals: Array com os valores a suavizar
+        window: Tamanho da janela (quantos valores para calcular cada média)
+    
+    Returns:
+        Array suavizado com o mesmo tamanho que channel_vals
     """
     n = len(channel_vals)
     if window <= 1 or n < window:
-        # No smoothing if window too small or not enough samples
+        # Se a janela é muito pequena ou não há dados suficientes, retorna dados originais
         return channel_vals
 
-    # Window-1 total padding, split left/right
+    # Calcula preenchimento (padding) nos extremos para manter tamanho original
     total_pad = window - 1
     pad_left = total_pad // 2
     pad_right = total_pad - pad_left
 
+    # Preenche os extremos do array replicando os primeiros/últimos valores
     padded = np.pad(channel_vals, (pad_left, pad_right), mode='edge')
+    # Cria o kernel (máscara) da média móvel - cada valor tem peso 1/window
     kernel = np.ones(window) / window
 
-    # 'valid' length = n
+    # Convolução: desliza a janela sobre os dados calculando a média
     smoothed = np.convolve(padded, kernel, mode='valid')
     return smoothed
 
 
 if __name__ == "__main__":
-    # Start the BLE thread
+    # ============================================
+    # INICIALIZAÇÃO - Inicia thread BLE
+    # ============================================
+    # Cria thread separada para comunicação BLE
     ble_thread = threading.Thread(target=run_bleak_loop, daemon=True)
     ble_thread.start()
 
     # Channels to exclude from plotting (0-indexed)
     # Here: only channel index 5 (Channel 6) is plotted
-    exclude_channels = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20}
-    #
+    exclude_channels = {0, 6, 7, 10, 11, 12, 13, 14, 15, 16}
 
-    # --------------------
-    # Set up real-time plot
-    # --------------------
+    # ============================================
+    # CONFIGURAÇÃO DO GRÁFICO EM TEMPO REAL
+    # ============================================
+    # Ativa modo interativo (actualiza gráfico em tempo real)
     plt.ion()
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    # We’ll initialize lines once we know the number of channels
+    # Variáveis para armazenar linhas e metadados do gráfico
     lines = []
     num_channels = 0
-    plot_channels = []  # indices of channels we actually plot
+    plot_channels = []  # Índices dos canais a plotar
 
-    # A buffer to hold the most recent data for plotting
+    # Buffer para armazenar últimos dados
     data_buffer = []
-    buffer_size = 2000  # keep up to 2000 data points
+    buffer_size = 2000  # Mantém até 2000 amostras em memória
 
-    # Track whether we have written the CSV header yet
+    # Controlo do ficheiro CSV
     csv_header_written = False
 
-    # For measuring relative time on the X-axis
+    # Será preenchido com primeiro timestamp (para eixo X relativo)
     first_timestamp = None
 
     try:
         while True:
-            # Retrieve any new data from the queue
+            # Processa todos os dados disponíveis na fila BLE
             while not data_queue.empty():
                 timestamp, values = data_queue.get()
 
-                # If this is the first data, set up channels
+                # Se for o primeiro dado, descobre número de canais
                 if num_channels == 0:
                     num_channels = len(values)
-                    # Decide which channels to plot (one or more)
+                    # Define canais a plotar (todos excepto os em exclude_channels)
                     plot_channels = [i for i in range(num_channels) if i not in exclude_channels]
+                    print(f"Detectados {num_channels} canais. Plotando: {[i+1 for i in plot_channels]}")
 
-                # If we haven't set up the plot lines yet, do it now
+                # Na primeira receção, cria linhas do gráfico
                 if not lines and num_channels > 0:
                     for i in plot_channels:
                         line, = ax.plot([], [], label=f'Channel {i+1}')
@@ -160,37 +203,41 @@ if __name__ == "__main__":
                     ax.set_title('Real-time ADC Data (Moving Average)')
                     ax.legend()
 
-                # If we haven't written the CSV header, do it now
+                # Escreve cabeçalho CSV na primeira oportunidade
                 if not csv_header_written and plot_channels:
                     with open(csv_filename, 'w', newline='') as file:
                         writer = csv.writer(file)
-                        # Only save timestamp + plotted channels
+                        # Cabeçalho: Timestamp + canais a plotar
                         header = ['Timestamp'] + [f'Channel_{i+1}' for i in plot_channels]
                         writer.writerow(header)
                     csv_header_written = True
+                    print(f"CSV criado: {csv_filename}")
 
-                # Append data to buffer
+                # Guarda primeiro timestamp para tempo relativo
                 if first_timestamp is None:
                     first_timestamp = timestamp
 
+                # Adiciona dados ao buffer
                 data_buffer.append((timestamp, values))
+                # Remove dados antigos se necessário
                 if len(data_buffer) > buffer_size:
                     data_buffer.pop(0)
 
-                # Write this data row to CSV (append mode) - ONLY plotted channels
+                # Escreve dados no CSV (modo append)
                 if csv_header_written:
                     with open(csv_filename, 'a', newline='') as file:
                         writer = csv.writer(file)
+                        # Apenas canais a plotar
                         row_values = [values[i] for i in plot_channels]
                         writer.writerow([timestamp] + row_values)
 
             # Update the plot if we have data
             if data_buffer and lines:
-                # Generate array of times in seconds relative to the first timestamp
+                # Calcula tempo relativo em segundos
                 times = [(dp[0] - first_timestamp).total_seconds() for dp in data_buffer]
                 times_arr = np.array(times)
 
-                # Update each plotted channel’s line data with MOVING AVERAGE
+                # Actualiza cada linha com dados suavizados
                 for line, ch_idx in zip(lines, plot_channels):
                     channel_vals = np.array([dp[1][ch_idx] for dp in data_buffer], dtype=float)
                     smoothed = smooth_with_moving_average(channel_vals, MOVING_AVG_WINDOW)
@@ -199,25 +246,30 @@ if __name__ == "__main__":
                 ax.relim()
                 ax.autoscale_view()
 
-            # Redraw the figure
+            # Redesenha a figura
             fig.canvas.draw()
             fig.canvas.flush_events()
 
-            # If the figure is closed, break
+            # Se fechar a janela, sai
             if not plt.fignum_exists(fig.number):
                 break
 
-            # Short pause to avoid maxing out CPU
+            # Pausa para evitar CPU excessivo
             time.sleep(0.01)
 
     except KeyboardInterrupt:
+        # Se o utilizador pressionar Ctrl+C, mostra mensagem
         print("Keyboard interrupt received. Exiting... - Only one channel.py:213")
 
     finally:
-        # Signal the BLE thread to stop
+        # ============================================
+        # LIMPEZA E ENCERRAMENTO
+        # ============================================
+        # Sinaliza à thread BLE que deve parar de receber notificações
         stop_event.set()
+        # Aguarda que a thread BLE termine a sua execução
         ble_thread.join()
 
-        # Clean up the plot
+        # Fecha a janela do gráfico
         plt.close(fig)
-        print("Done. - Only one channel.py:222")
+        print("Programa terminado com sucesso. - Only one channel.py:222")
