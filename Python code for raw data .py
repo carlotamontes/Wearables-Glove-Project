@@ -76,7 +76,6 @@ async def bleak_main():
     print("Scanning for BLE devices... - Only one channel.py:55")
     # Descobre todos os dispositivos Bluetooth Low Energy disponíveis
     devices = await BleakScanner.discover()
-    # Encontra o primeiro dispositivo cujo nome contém "bluetoothterminal"
     device = next((d for d in devices if d.name and "bluetoothterminal" in d.name.lower()), None)
 
     if not device:
@@ -155,10 +154,8 @@ if __name__ == "__main__":
     ble_thread = threading.Thread(target=run_bleak_loop, daemon=True)
     ble_thread.start()
 
-    # ============================================
-    # CONFIGURAÇÃO DE CANAIS A VISUALIZAR
-    # ============================================
-    # Especifica índices dos canais a EXCLUIR (0-indexed)
+    # Channels to exclude from plotting (0-indexed)
+    # Here: only channel index 5 (Channel 6) is plotted
     exclude_channels = {0, 6, 7, 10, 11, 12, 13, 14, 15, 16}
 
     # ============================================
