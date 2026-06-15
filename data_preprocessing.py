@@ -54,7 +54,7 @@ from bleak import BleakScanner, BleakClient
 # Configuration — adjust to match your ESP32 firmware
 # ──────────────────────────────────────────────────────────────────────────────
 
-DEVICE_NAME_SUBSTRING  = "bluetoothterminal"   # partial match, case-insensitive
+DEVICE_NAME_SUBSTRING  = "Grupo8"   # partial match, case-insensitive
 CHARACTERISTIC_UUID    = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 # Indices of the 5 finger channels in the comma-separated BLE payload.
