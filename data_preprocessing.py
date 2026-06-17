@@ -54,15 +54,15 @@ from bleak import BleakScanner, BleakClient
 # Configuration — adjust to match your ESP32 firmware
 # ──────────────────────────────────────────────────────────────────────────────
 
-DEVICE_NAME_SUBSTRING  = "Grupo8"   # partial match, case-insensitive
+DEVICE_NAME_SUBSTRING  = "group8"   # partial match, case-insensitive
 CHARACTERISTIC_UUID    = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-# Indices of the 5 finger channels in the comma-separated BLE payload.
-# Example payload:  "512, 489, 601, 534, 477"  → index 0-4
-FINGER_CHANNEL_INDICES = [0]                    # 1 channel now; change to [0,1,2,3,4] for full glove
+# PCB channel numbers for each finger (thumb→pinky) and their payload positions.
+PCB_FINGER_CHANNELS    = [9, 13, 5, 6, 10]      # PCB channel labels, thumb to pinky
+FINGER_PAYLOAD_INDICES = [8, 12, 4, 5, 9]        # corresponding indices in the BLE payload
 
 # Moving-average window (number of samples).  At ~100 Hz this is 200 ms.
-MOVING_AVG_WINDOW = 5
+MOVING_AVG_WINDOW = 30
 
 # Samples averaged when recording a calibration point
 CALIBRATION_SAMPLES = 100
@@ -118,16 +118,27 @@ class CalibrationData:
 class SensorProcessor:
     """
     Thread-safe wrapper around BLE acquisition, smoothing, and calibration.
+
+    selected_fingers : list of ints (0-4, thumb=0 … pinky=4)
+        Subset of fingers to read. Maps to FINGER_PAYLOAD_INDICES.
+        None → all five fingers.
     """
 
-    def __init__(self):
+    def __init__(self, selected_fingers: Optional[List[int]] = None):
+        if selected_fingers is None:
+            selected_fingers = [0, 1, 2, 3, 4]
+        self._selected_fingers = selected_fingers
+        # Payload indices for the chosen fingers
+        self._finger_indices: List[int] = [FINGER_PAYLOAD_INDICES[f] for f in selected_fingers]
+        self._n_fingers = len(self._finger_indices)
+
         self._raw_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
         self._ble_thread: Optional[threading.Thread] = None
 
-        # Ring buffers — one per finger — for moving average
+        # Ring buffers — one per selected finger — for moving average
         self._buffers: List[deque] = [
-            deque(maxlen=MOVING_AVG_WINDOW) for _ in FINGER_CHANNEL_INDICES
+            deque(maxlen=MOVING_AVG_WINDOW) for _ in self._finger_indices
         ]
 
         # Calibration accumulation
@@ -136,10 +147,14 @@ class SensorProcessor:
             "closed": [], "half": [], "open": []
         }
         self._recording_pose: Optional[str] = None  # set during recording
+        self._calib_spans: Optional[np.ndarray] = None  # |open - closed| per finger
 
         # Shared state (protected by a lock for safe cross-thread reads)
         self._state_lock = threading.Lock()
-        self._state = HandState()
+        self._state = HandState(
+            finger_apertures=[0.0] * self._n_fingers,
+            raw_adc=[0.0] * self._n_fingers,
+        )
 
         # Background processing thread
         self._proc_thread = threading.Thread(target=self._processing_loop,
@@ -196,9 +211,13 @@ class SensorProcessor:
                   f"{getattr(self._calib_data, pose).round(1)}")
 
         if self._calib_data.is_complete():
+            self._calib_spans = np.abs(self._calib_data.open - self._calib_data.closed)
+            print("[Calibration] Complete.  Spans per finger (open-closed):")
+            for i, span in enumerate(self._calib_spans):
+                fi = self._selected_fingers[i] if i < len(self._selected_fingers) else i
+                print(f"  finger {fi}: span = {span:.1f}")
             with self._state_lock:
                 self._state.calibrated = True
-            print("[Calibration] Complete ✓  System ready.")
             return True
         return False
 
@@ -281,9 +300,9 @@ class SensorProcessor:
 
             for ts, values in batch:
                 # Extract finger channels; skip packet if too short
-                if len(values) < max(FINGER_CHANNEL_INDICES) + 1:
+                if len(values) < max(self._finger_indices) + 1:
                     continue
-                finger_raw = np.array([values[i] for i in FINGER_CHANNEL_INDICES],
+                finger_raw = np.array([values[i] for i in self._finger_indices],
                                       dtype=float)
 
                 # Update ring buffers
@@ -301,7 +320,6 @@ class SensorProcessor:
                     pool = self._calib_accum[self._recording_pose]
                     if len(pool) < CALIBRATION_SAMPLES:
                         pool.append(smoothed.copy())
-                    # Auto-advance: stop recording once we have enough
                     if len(pool) >= CALIBRATION_SAMPLES:
                         print(f"[Calibration] Done collecting '{self._recording_pose}'.")
                         self._recording_pose = None
@@ -311,10 +329,10 @@ class SensorProcessor:
 
                 # Update shared state
                 with self._state_lock:
-                    self._state.raw_adc = finger_raw.tolist()
-                    self._state.aperture = aperture
+                    self._state.raw_adc          = finger_raw.tolist()
+                    self._state.aperture         = aperture
                     self._state.finger_apertures = finger_apertures
-                    self._state.timestamp = ts
+                    self._state.timestamp        = ts
 
             time.sleep(0.001)
 
@@ -330,23 +348,34 @@ class SensorProcessor:
         Without calibration, returns 0.0 for everything.
         """
         if not self._calib_data.is_complete():
-            return 0.0, [0.0] * len(FINGER_CHANNEL_INDICES)
+            return 0.0, [0.0] * self._n_fingers
 
         closed_vec = self._calib_data.closed
         half_vec   = self._calib_data.half
         open_vec   = self._calib_data.open
 
         finger_apertures = []
-        for i in range(len(FINGER_CHANNEL_INDICES)):
+        for i in range(self._n_fingers):
             v      = smoothed[i]
             v_cl   = closed_vec[i]
             v_half = half_vec[i]
             v_op   = open_vec[i]
 
+            # Per-finger calibrated clamp: hold at the calibration extreme
+            # instead of extrapolating past it.
+            v_lo = min(v_op, v_cl)
+            v_hi = max(v_op, v_cl)
+            v    = float(np.clip(v, v_lo, v_hi))
+
             ap = _piecewise_interp(v, v_cl, v_half, v_op)
             finger_apertures.append(float(np.clip(ap, -1.0, 1.0)))
 
-        aperture = float(np.mean(finger_apertures))
+        # Weighted average by calibration span: fingers with larger open-closed
+        # range are more reliable and contribute more to the scalar aperture.
+        if self._calib_spans is not None and self._calib_spans.sum() > 0:
+            aperture = float(np.average(finger_apertures, weights=self._calib_spans))
+        else:
+            aperture = float(np.mean(finger_apertures))
         return aperture, finger_apertures
 
 
@@ -422,9 +451,10 @@ class SimulatedSensorProcessor(SensorProcessor):
 
     def _auto_calibrate(self):
         """Set calibration values without needing real sensor samples."""
-        self._calib_data.closed = np.array([312.0] * 5)   # fist
-        self._calib_data.half   = np.array([512.0] * 5)   # half-open
-        self._calib_data.open   = np.array([712.0] * 5)   # open
+        n = self._n_fingers
+        self._calib_data.closed = np.array([312.0] * n)
+        self._calib_data.half   = np.array([512.0] * n)
+        self._calib_data.open   = np.array([712.0] * n)
         with self._state_lock:
             self._state.calibrated = True
         print("[SimulatedSensor] Auto-calibration done (closed=312, half=512, open=712).")
