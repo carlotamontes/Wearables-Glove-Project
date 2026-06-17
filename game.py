@@ -84,13 +84,40 @@ def ap_to_y(aperture, screen_h=SCREEN_H):
     """Aperture [-1..1] to screen y (positive ap = higher on screen)."""
     return int(screen_h // 2 - aperture * AP_SCALE_PX)
 
-def export_csv(patient_name, level, finger_names, rows, timestamps):
+def build_calib_rows(proc, finger_names):
+    """Extract calibration metadata from processor for CSV header."""
+    calib_rows = []
+    try:
+        cd = proc._calib_data
+        sp = proc._calib_spans
+        if cd.closed is not None:
+            calib_rows.append(["calib_closed"] + [f"{v:.2f}" for v in cd.closed])
+        if cd.half is not None:
+            calib_rows.append(["calib_half"]   + [f"{v:.2f}" for v in cd.half])
+        if cd.open is not None:
+            calib_rows.append(["calib_open"]   + [f"{v:.2f}" for v in cd.open])
+        if sp is not None:
+            calib_rows.append(["calib_span"]   + [f"{v:.2f}" for v in sp])
+    except Exception:
+        pass
+    return calib_rows
+
+
+def export_csv(patient_name, level, finger_names, rows, timestamps, calib_rows=None):
     os.makedirs("recordings", exist_ok=True)
     ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe  = "".join(c for c in patient_name if c.isalnum() or c in "_-") or "patient"
     path  = f"recordings/{safe}_{level}_{ts}.csv"
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
+        # Calibration metadata rows (prefixed label + one value per finger)
+        if calib_rows:
+            header_label = ["#"] + finger_names
+            w.writerow(header_label)
+            for cr in calib_rows:
+                w.writerow(cr)
+            w.writerow([])   # blank separator
+        # Time-series data
         w.writerow(["time_s"] + finger_names)
         for i, row in enumerate(rows):
             w.writerow([f"{timestamps[i]:.4f}"] + [f"{v:.5f}" for v in row])
@@ -528,7 +555,8 @@ class LevelAGameScene:
             self.done = True
             names = [FINGER_NAMES[i] for i in self.selected_fingers]
             self.csv_path = export_csv(self.patient_name, "levelA", names,
-                                       self.data_rows, self.timestamps)
+                                       self.data_rows, self.timestamps,
+                                       calib_rows=build_calib_rows(self.proc, names))
 
     def draw(self, surface):
         fb, fm, fs = self.fonts
@@ -596,7 +624,8 @@ class LevelBGameScene:
             self.done = True
             names = [FINGER_NAMES[i] for i in self.selected_fingers]
             self.csv_path = export_csv(self.patient_name, "levelB", names,
-                                       self.data_rows, self.timestamps)
+                                       self.data_rows, self.timestamps,
+                                       calib_rows=build_calib_rows(self.proc, names))
 
     def draw(self, surface):
         fb, fm, fs = self.fonts
