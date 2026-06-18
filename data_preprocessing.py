@@ -61,6 +61,10 @@ CHARACTERISTIC_UUID    = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 PCB_FINGER_CHANNELS    = [9, 13, 5, 6, 10]      # PCB channel labels, thumb to pinky
 FINGER_PAYLOAD_INDICES = [8, 12, 4, 5, 9]        # corresponding indices in the BLE payload
 
+# IMU channels for tremor detection (ch15, ch16, ch17 → payload indices 14, 15, 16).
+IMU_PAYLOAD_INDICES    = [14, 15, 16]
+IMU_CHANNEL_LABELS     = ["ch15", "ch16", "ch17"]
+
 # Moving-average window (number of samples).  At ~100 Hz this is 200 ms.
 MOVING_AVG_WINDOW = 30
 
@@ -96,6 +100,7 @@ class HandState:
     aperture: float = 0.0
     finger_apertures: List[float] = field(default_factory=lambda: [0.0] * 5)
     raw_adc: List[float] = field(default_factory=lambda: [0.0] * 5)
+    imu_raw: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     timestamp: float = field(default_factory=time.monotonic)
     calibrated: bool = False
 
@@ -140,6 +145,10 @@ class SensorProcessor:
         self._buffers: List[deque] = [
             deque(maxlen=MOVING_AVG_WINDOW) for _ in self._finger_indices
         ]
+        # Ring buffers for IMU channels (ch15, ch16, ch17)
+        self._imu_buffers: List[deque] = [
+            deque(maxlen=MOVING_AVG_WINDOW) for _ in IMU_PAYLOAD_INDICES
+        ]
 
         # Calibration accumulation
         self._calib_data = CalibrationData()
@@ -154,6 +163,7 @@ class SensorProcessor:
         self._state = HandState(
             finger_apertures=[0.0] * self._n_fingers,
             raw_adc=[0.0] * self._n_fingers,
+            imu_raw=[0.0] * len(IMU_PAYLOAD_INDICES),
         )
 
         # Background processing thread
@@ -230,6 +240,7 @@ class SensorProcessor:
                 aperture=s.aperture,
                 finger_apertures=list(s.finger_apertures),
                 raw_adc=list(s.raw_adc),
+                imu_raw=list(s.imu_raw),
                 timestamp=s.timestamp,
                 calibrated=s.calibrated,
             )
@@ -299,17 +310,23 @@ class SensorProcessor:
                 continue
 
             for ts, values in batch:
-                # Extract finger channels; skip packet if too short
-                if len(values) < max(self._finger_indices) + 1:
+                min_needed = max(max(self._finger_indices), max(IMU_PAYLOAD_INDICES)) + 1
+                if len(values) < min_needed:
                     continue
                 finger_raw = np.array([values[i] for i in self._finger_indices],
                                       dtype=float)
+                imu_raw    = np.array([values[i] for i in IMU_PAYLOAD_INDICES],
+                                      dtype=float)
 
-                # Update ring buffers
+                # Update finger ring buffers
                 for idx, val in enumerate(finger_raw):
                     self._buffers[idx].append(val)
 
-                # Compute smoothed (moving average)
+                # Update IMU ring buffers
+                for idx, val in enumerate(imu_raw):
+                    self._imu_buffers[idx].append(val)
+
+                # Compute smoothed finger values (moving average)
                 smoothed = np.array([
                     np.mean(buf) if buf else val
                     for buf, val in zip(self._buffers, finger_raw)
@@ -330,6 +347,7 @@ class SensorProcessor:
                 # Update shared state
                 with self._state_lock:
                     self._state.raw_adc          = finger_raw.tolist()
+                    self._state.imu_raw          = imu_raw.tolist()
                     self._state.aperture         = aperture
                     self._state.finger_apertures = finger_apertures
                     self._state.timestamp        = ts
@@ -440,11 +458,12 @@ class SimulatedSensorProcessor(SensorProcessor):
 
     def _simulate(self):
         t = 0.0
+        n_ch = max(max(FINGER_PAYLOAD_INDICES), max(IMU_PAYLOAD_INDICES)) + 1
         while not self._stop_event.is_set():
             # Slow sine: full open→close cycle every 4 seconds
             value = 512 + 200 * np.sin(2 * np.pi * t / 4.0)
-            noise = np.random.normal(0, 5, size=5)
-            values = [value + noise[i] for i in range(5)]
+            noise = np.random.normal(0, 5, size=n_ch)
+            values = [value + noise[i] for i in range(n_ch)]
             self._raw_queue.put((time.monotonic(), values))
             t += 0.01
             time.sleep(0.01)

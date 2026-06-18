@@ -27,6 +27,7 @@ FPS               = 60
 AP_SCALE_PX       = 200    # pixels per aperture unit  (ap=1 -> 200 px above centre)
 TUNNEL_HALF_AP    = 0.5    # tunnel half-width in aperture units
 BALL_RADIUS       = 14
+SHIP_SIZE         = 52       # side length of the scaled spaceship sprite
 
 LEVEL_A_DURATION  = 20.0
 LEVEL_B_DURATION  = 30.0
@@ -52,6 +53,7 @@ TREMOR_HIGH_HZ = 7.0
 
 FINGER_NAMES   = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
 PCB_CH_LABELS  = ["ch4",  "ch5",   "ch6",    "ch9",  "ch13"]
+IMU_NAMES      = ["ch15", "ch16", "ch17"]
 
 # ── Colours ────────────────────────────────────────────────────────────────────
 C_BG       = (15,  20,  30)
@@ -67,7 +69,18 @@ C_BTN_HOV  = (55,  75, 115)
 C_BTN_SEL  = (30,  110,  85)
 C_BAR_BG   = (40,  50,  70)
 
+# Loaded once in main(); draw helpers fall back gracefully if absent.
+ASSETS: dict = {}
+
 # ── Utilities ──────────────────────────────────────────────────────────────────
+
+def draw_bg(surface):
+    """Blit the space background image, or fill with C_BG if not loaded."""
+    bg = ASSETS.get("bg")
+    if bg:
+        surface.blit(bg, (0, 0))
+    else:
+        draw_bg(surface)
 
 def lerp(a, b, t):
     return a + (b - a) * t
@@ -108,28 +121,32 @@ def build_calib_rows(proc, finger_names):
     return calib_rows
 
 
-def export_csv(patient_name, level, finger_names, rows, timestamps, calib_rows=None):
+def export_csv(patient_name, level, finger_names, rows, timestamps,
+               calib_rows=None, imu_rows=None):
     os.makedirs("recordings", exist_ok=True)
     ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe  = "".join(c for c in patient_name if c.isalnum() or c in "_-") or "patient"
     path  = f"recordings/{safe}_{level}_{ts}.csv"
+    imu_header = IMU_NAMES if imu_rows else []
+    n_imu      = len(imu_header)
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        # Calibration metadata rows (prefixed label + one value per finger)
+        # Calibration metadata rows — include IMU column headers so every row
+        # has the same number of columns and Excel aligns them correctly.
         if calib_rows:
-            header_label = ["#"] + finger_names
-            w.writerow(header_label)
+            w.writerow(["#"] + finger_names + imu_header)
             for cr in calib_rows:
-                w.writerow(cr)
+                w.writerow(cr + [""] * n_imu)   # empty cells for IMU columns
             w.writerow([])   # blank separator
         # Time-series data
-        w.writerow(["time_s"] + finger_names)
+        w.writerow(["time_s"] + finger_names + imu_header)
         for i, row in enumerate(rows):
-            w.writerow([f"{timestamps[i]:.4f}"] + [f"{v:.5f}" for v in row])
+            imu_part = ([f"{v:.5f}" for v in imu_rows[i]] if imu_rows and i < len(imu_rows) else [])
+            w.writerow([f"{timestamps[i]:.4f}"] + [f"{v:.5f}" for v in row] + imu_part)
     return path
 
 def tremor_analysis(signal, sr=FPS, low=TREMOR_LOW_HZ, high=TREMOR_HIGH_HZ):
-    """Return (n_tremors, dominant_hz) for the signal."""
+    """Return (n_tremors, dominant_hz) for a single-channel signal."""
     sig = np.array(signal, dtype=float)
     if len(sig) < 16:
         return 0, 0.0
@@ -145,6 +162,77 @@ def tremor_analysis(signal, sr=FPS, low=TREMOR_LOW_HZ, high=TREMOR_HIGH_HZ):
     peaks, _ = find_peaks(band_m, height=thr)
     dom_f  = float(band_f[np.argmax(band_m)])
     return len(peaks), dom_f
+
+
+def imu_tremor_analysis(imu_rows, sr=FPS, low=TREMOR_LOW_HZ, high=TREMOR_HIGH_HZ):
+    """
+    Combined tremor analysis across 3 IMU axes (ch15, ch16, ch17).
+
+    Power spectra from all three axes are summed so that tremor in any
+    direction contributes to the result.
+
+    Returns a dict with:
+        dominant_hz        – peak frequency in the tremor band (Hz)
+        band_power         – total spectral power in the tremor band
+        relative_power_pct – band_power / total_power  (%)
+        pct_time_tremor    – % of 1-s windows where >20% of power is in band
+    """
+    arr = np.array(imu_rows, dtype=float)   # (N, 3)
+    if arr.ndim != 2 or arr.shape[1] < 3:
+        return dict(dominant_hz=0.0, band_power=0.0,
+                    relative_power_pct=0.0, pct_time_tremor=0.0)
+    N = arr.shape[0]
+    if N < 32:
+        return dict(dominant_hz=0.0, band_power=0.0,
+                    relative_power_pct=0.0, pct_time_tremor=0.0)
+
+    arr -= arr.mean(axis=0)   # DC removal per axis
+
+    # Full-signal spectrum: sum power across all 3 axes
+    freqs = np.fft.rfftfreq(N, d=1.0 / sr)
+    power = np.zeros(len(freqs))
+    for ch in range(arr.shape[1]):
+        power += np.abs(np.fft.rfft(arr[:, ch])) ** 2
+
+    mask_band = (freqs >= low) & (freqs <= high)
+
+    if mask_band.any() and power[mask_band].max() > 0:
+        dominant_hz = float(freqs[mask_band][np.argmax(power[mask_band])])
+    else:
+        dominant_hz = 0.0
+
+    band_power  = float(power[mask_band].sum()) if mask_band.any() else 0.0
+    total_power = float(power.sum())
+    relative_pct = 100.0 * band_power / total_power if total_power > 0 else 0.0
+
+    # % time with tremors: sliding 1-s windows, 50% overlap
+    win    = max(16, int(sr))
+    hop    = max(1, win // 2)
+    w_freq = np.fft.rfftfreq(win, d=1.0 / sr)
+    w_mask = (w_freq >= low) & (w_freq <= high)
+
+    tremor_wins = 0
+    total_wins  = 0
+    for start in range(0, N - win + 1, hop):
+        chunk   = arr[start:start + win]
+        w_power = np.zeros(len(w_freq))
+        for ch in range(chunk.shape[1]):
+            seg = chunk[:, ch] - chunk[:, ch].mean()
+            w_power += np.abs(np.fft.rfft(seg)) ** 2
+        w_total = w_power.sum()
+        w_band  = w_power[w_mask].sum() if w_mask.any() else 0.0
+        if w_total > 0 and (w_band / w_total) > 0.20:
+            tremor_wins += 1
+        total_wins += 1
+
+    pct_time = 100.0 * tremor_wins / max(1, total_wins)
+
+    return dict(
+        dominant_hz        = dominant_hz,
+        band_power         = band_power,
+        relative_power_pct = relative_pct,
+        pct_time_tremor    = pct_time,
+    )
 
 
 # ── Shared UI widgets ──────────────────────────────────────────────────────────
@@ -289,7 +377,7 @@ class HomeScreen:
 
     def draw(self, surface):
         fb, fm, fs = self.fonts
-        surface.fill(C_BG)
+        draw_bg(surface)
         W, H = surface.get_size()
 
         # Vertical divider
@@ -359,7 +447,7 @@ class LevelASetupScreen:
 
     def draw(self, surface):
         fb, fm, fs = self.fonts
-        surface.fill(C_BG)
+        draw_bg(surface)
         W, H = surface.get_size()
 
         t = fb.render("Level A", True, C_ACCENT)
@@ -427,7 +515,7 @@ class CalibrationScreen:
 
     def draw(self, surface):
         fb, fm, fs = self.fonts
-        surface.fill(C_BG)
+        draw_bg(surface)
         W, H = surface.get_size()
 
         t = fb.render("Calibration", True, C_TEXT)
@@ -481,34 +569,51 @@ class CalibrationScreen:
 # ── Shared tunnel drawing ──────────────────────────────────────────────────────
 
 def draw_straight_tunnel(surface, tunnel_center_ap, current_ap):
-    """Draw flat-line tunnel and ball. Returns True if ball is inside."""
+    """Draw space-themed tunnel and ship. Returns True if ship is inside."""
     W, H = surface.get_size()
-    cy   = H // 2
 
-    top_ap  = tunnel_center_ap + TUNNEL_HALF_AP
-    bot_ap  = tunnel_center_ap - TUNNEL_HALF_AP
-    top_y   = ap_to_y(top_ap)
-    bot_y   = ap_to_y(bot_ap)
+    top_ap = tunnel_center_ap + TUNNEL_HALF_AP
+    bot_ap = tunnel_center_ap - TUNNEL_HALF_AP
+    top_y  = ap_to_y(top_ap)
+    bot_y  = ap_to_y(bot_ap)
 
-    # Tunnel fill
-    pygame.draw.rect(surface, (28, 42, 38),
-                     pygame.Rect(0, top_y, W, bot_y - top_y))
+    # Semi-transparent tunnel fill
+    fill = pygame.Surface((W, bot_y - top_y), pygame.SRCALPHA)
+    fill.fill((10, 40, 80, 70))
+    surface.blit(fill, (0, top_y))
 
-    # Straight flat borders (no relief)
-    pygame.draw.line(surface, C_TUNNEL, (0, top_y), (W, top_y), 3)
-    pygame.draw.line(surface, C_TUNNEL, (0, bot_y), (W, bot_y), 3)
+    # Glowing tunnel borders: wide dim outer glow + bright inner line
+    for ly in (top_y, bot_y):
+        pygame.draw.line(surface, (20,  80, 180), (0, ly), (W, ly), 8)
+        pygame.draw.line(surface, (80, 180, 255), (0, ly), (W, ly), 2)
 
     # Dashed centre line
-    for x in range(0, W, 22):
-        pygame.draw.line(surface, (45, 75, 58), (x, ap_to_y(tunnel_center_ap)),
-                         (x + 11, ap_to_y(tunnel_center_ap)), 1)
+    centre_y = ap_to_y(tunnel_center_ap)
+    for x in range(0, W, 28):
+        pygame.draw.line(surface, (50, 120, 180), (x, centre_y), (x + 14, centre_y), 1)
 
-    # Ball
-    ball_y  = ap_to_y(current_ap)
-    inside  = top_y <= ball_y <= bot_y
-    bcol    = C_GOLD if inside else C_DANGER
-    pygame.draw.circle(surface, bcol,   (W // 2, ball_y), BALL_RADIUS)
-    pygame.draw.circle(surface, C_TEXT, (W // 2, ball_y), BALL_RADIUS, 2)
+    # Ship position
+    ball_y = ap_to_y(current_ap)
+    inside = top_y <= ball_y <= bot_y
+    cx     = W // 2
+
+    # Glow behind ship (gold = inside, red = outside)
+    glow_r   = SHIP_SIZE // 2 + 10
+    glow_col = (255, 200, 50, 100) if inside else (255, 60, 60, 110)
+    glow_s   = pygame.Surface((glow_r * 2, glow_r * 2), pygame.SRCALPHA)
+    pygame.draw.circle(glow_s, glow_col, (glow_r, glow_r), glow_r)
+    surface.blit(glow_s, (cx - glow_r, ball_y - glow_r))
+
+    # Draw spaceship or fallback circle
+    ship = ASSETS.get("ship")
+    if ship:
+        rect = ship.get_rect(center=(cx, ball_y))
+        surface.blit(ship, rect)
+    else:
+        bcol = C_GOLD if inside else C_DANGER
+        pygame.draw.circle(surface, bcol,   (cx, ball_y), BALL_RADIUS)
+        pygame.draw.circle(surface, C_TEXT, (cx, ball_y), BALL_RADIUS, 2)
+
     return inside
 
 
@@ -537,6 +642,7 @@ class LevelAGameScene:
         self.elapsed          = 0.0
         self.done             = False
         self.data_rows        = []
+        self.imu_rows         = []
         self.timestamps       = []
         self.csv_path         = None
 
@@ -549,12 +655,15 @@ class LevelAGameScene:
         self.elapsed += dt
 
         if SENSOR_AVAILABLE:
-            state = self.proc.get_current_state()
-            row   = list(state.finger_apertures)
+            state    = self.proc.get_current_state()
+            row      = list(state.finger_apertures)
+            imu_row  = list(state.imu_raw)
         else:
-            row = [0.0] * max(1, len(self.selected_fingers))
+            row     = [0.0] * max(1, len(self.selected_fingers))
+            imu_row = [0.0, 0.0, 0.0]
 
         self.data_rows.append(row)
+        self.imu_rows.append(imu_row)
         self.timestamps.append(self.elapsed)
 
         if self.elapsed >= LEVEL_A_DURATION:
@@ -562,11 +671,12 @@ class LevelAGameScene:
             names = [FINGER_NAMES[i] for i in self.selected_fingers]
             self.csv_path = export_csv(self.patient_name, "levelA", names,
                                        self.data_rows, self.timestamps,
-                                       calib_rows=build_calib_rows(self.proc, names))
+                                       calib_rows=build_calib_rows(self.proc, names),
+                                       imu_rows=self.imu_rows)
 
     def draw(self, surface):
         fb, fm, fs = self.fonts
-        surface.fill(C_BG)
+        draw_bg(surface)
         W, H = surface.get_size()
 
         if SENSOR_AVAILABLE:
@@ -602,6 +712,7 @@ class LevelBGameScene:
         self.elapsed          = 0.0
         self.done             = False
         self.data_rows        = []
+        self.imu_rows         = []
         self.timestamps       = []
         self.csv_path         = None
 
@@ -618,12 +729,15 @@ class LevelBGameScene:
         self.elapsed += dt
 
         if SENSOR_AVAILABLE:
-            state = self.proc.get_current_state()
-            row   = list(state.finger_apertures)
+            state   = self.proc.get_current_state()
+            row     = list(state.finger_apertures)
+            imu_row = list(state.imu_raw)
         else:
-            row = [0.0] * max(1, len(self.selected_fingers))
+            row     = [0.0] * max(1, len(self.selected_fingers))
+            imu_row = [0.0, 0.0, 0.0]
 
         self.data_rows.append(row)
+        self.imu_rows.append(imu_row)
         self.timestamps.append(self.elapsed)
 
         if self.elapsed >= LEVEL_B_DURATION:
@@ -631,11 +745,12 @@ class LevelBGameScene:
             names = [FINGER_NAMES[i] for i in self.selected_fingers]
             self.csv_path = export_csv(self.patient_name, "levelB", names,
                                        self.data_rows, self.timestamps,
-                                       calib_rows=build_calib_rows(self.proc, names))
+                                       calib_rows=build_calib_rows(self.proc, names),
+                                       imu_rows=self.imu_rows)
 
     def draw(self, surface):
         fb, fm, fs = self.fonts
-        surface.fill(C_BG)
+        draw_bg(surface)
         W, H = surface.get_size()
 
         if SENSOR_AVAILABLE:
@@ -683,20 +798,14 @@ def _draw_done_overlay(surface, W, H, font_big, font_small):
 # ── Results A ──────────────────────────────────────────────────────────────────
 
 class ResultsScreenA:
-    def __init__(self, data_rows, timestamps, selected_fingers, patient_name, csv_path, fonts):
-        self.fonts            = fonts
-        self.selected_fingers = selected_fingers
-        self.patient_name     = patient_name
-        self.csv_path         = csv_path
-        self.next_scene       = None
+    def __init__(self, data_rows, timestamps, selected_fingers, patient_name, csv_path, fonts,
+                 imu_rows=None):
+        self.fonts        = fonts
+        self.patient_name = patient_name
+        self.csv_path     = csv_path
+        self.next_scene   = None
 
-        arr   = np.array(data_rows) if data_rows else np.zeros((1, max(1, len(selected_fingers))))
-        names = [FINGER_NAMES[i] for i in selected_fingers]
-
-        self.rows = []
-        for fi in range(arr.shape[1]):
-            n, f = tremor_analysis(arr[:, fi].tolist())
-            self.rows.append({"name": names[fi], "n": n, "hz": f})
+        self.tremor = imu_tremor_analysis(imu_rows if imu_rows else [])
 
         fb, fm, fs = fonts
         self.btn_home = Button((SCREEN_W // 2 - 100, SCREEN_H - 70, 200, 44),
@@ -711,37 +820,65 @@ class ResultsScreenA:
 
     def draw(self, surface):
         fb, fm, fs = self.fonts
-        surface.fill(C_BG)
+        draw_bg(surface)
         W, H = surface.get_size()
 
-        t = fb.render("Results  -  Level A", True, C_ACCENT)
+        t = fb.render("Results  -  Level A  (IMU Tremor Analysis)", True, C_ACCENT)
         surface.blit(t, t.get_rect(center=(W // 2, 50)))
 
         s = fs.render(
-            f"Patient: {self.patient_name}     Tremor detection: {TREMOR_LOW_HZ}-{TREMOR_HIGH_HZ} Hz",
+            f"Patient: {self.patient_name}     "
+            f"Tremor band: {TREMOR_LOW_HZ:.0f}-{TREMOR_HIGH_HZ:.0f} Hz     "
+            f"Axes: ch15 / ch16 / ch17",
             True, C_DIM)
-        surface.blit(s, s.get_rect(center=(W // 2, 90)))
+        surface.blit(s, s.get_rect(center=(W // 2, 92)))
 
-        # Table
-        headers = ["Finger", "Tremors detected", "Dominant freq (Hz)"]
-        xs      = [120, 380, 640]
-        y       = 148
-        for h, x in zip(headers, xs):
-            surface.blit(fm.render(h, True, C_DIM), (x, y))
-        pygame.draw.line(surface, C_DIM, (80, y + 36), (W - 80, y + 36), 1)
-        y += 48
+        # ── 4-metric dashboard ────────────────────────────────────────────────
+        tr = self.tremor
+        has_tremor = tr["dominant_hz"] > 0
 
-        for row in self.rows:
-            vals = [row["name"],
-                    str(row["n"]),
-                    f"{row['hz']:.2f}" if row["n"] > 0 else "-"]
-            colors = [C_TEXT,
-                      C_DANGER if row["n"] > 0 else C_ACCENT,
-                      C_TEXT]
-            for val, col, x in zip(vals, colors, xs):
-                surface.blit(fm.render(val, True, col), (x, y))
-            pygame.draw.line(surface, C_PANEL, (80, y + 36), (W - 80, y + 36), 1)
-            y += 44
+        metrics = [
+            ("Dominant frequency in tremor band",
+             f"{tr['dominant_hz']:.2f} Hz" if has_tremor else "—",
+             C_DANGER if has_tremor else C_ACCENT,
+             "Frequency with highest spectral power in 4-7 Hz band"),
+
+            ("Total band power  (4-7 Hz)",
+             f"{tr['band_power']:.1f}",
+             C_GOLD if has_tremor else C_ACCENT,
+             "Sum of spectral power across all 3 IMU axes in the tremor band"),
+
+            ("Relative tremor power",
+             f"{tr['relative_power_pct']:.1f} %",
+             C_DANGER if tr["relative_power_pct"] > 30 else
+             C_GOLD   if tr["relative_power_pct"] > 15 else C_ACCENT,
+             "Band power as % of total signal power (all frequencies)"),
+
+            ("Time with active tremor",
+             f"{tr['pct_time_tremor']:.1f} %",
+             C_DANGER if tr["pct_time_tremor"] > 50 else
+             C_GOLD   if tr["pct_time_tremor"] > 25 else C_ACCENT,
+             "% of 1-s windows where >20% of power falls in the tremor band"),
+        ]
+
+        # Two columns: label left, value centre-right, description dim
+        lx, vx, dx = 80, 580, 80
+        y = 148
+        pygame.draw.line(surface, C_DIM, (lx, y), (W - lx, y), 1)
+        y += 12
+
+        for label, value, val_col, desc in metrics:
+            # Label
+            surface.blit(fm.render(label, True, C_TEXT), (lx, y))
+            # Value (right-aligned block)
+            v_surf = fb.render(value, True, val_col)
+            surface.blit(v_surf, v_surf.get_rect(midright=(W - lx, y + 10)))
+            # Description
+            y += 40
+            surface.blit(fs.render(desc, True, C_DIM), (dx, y))
+            y += 28
+            pygame.draw.line(surface, C_PANEL, (lx, y), (W - lx, y), 1)
+            y += 14
 
         if self.csv_path:
             p = fs.render(f"Data saved: {self.csv_path}", True, C_DIM)
@@ -786,7 +923,7 @@ class ResultsScreenB:
 
     def draw(self, surface):
         fb, fm, fs = self.fonts
-        surface.fill(C_BG)
+        draw_bg(surface)
         W, H = surface.get_size()
 
         t = fb.render("Results  -  Level B", True, C_ACCENT)
@@ -836,6 +973,7 @@ class ResultsScreenB:
 class _DummyState:
     aperture         = 0.0
     finger_apertures = [0.0]
+    imu_raw          = [0.0, 0.0, 0.0]
     calibrated       = True
 
 
@@ -861,11 +999,51 @@ class _DummyProc:
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
+def _load_assets():
+    """Load image assets into the global ASSETS dict. Called once after pygame.init()."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    ui   = os.path.join(base, "UI_images")
+
+    # Background
+    try:
+        bg = pygame.image.load(os.path.join(ui, "background.jpg")).convert()
+        ASSETS["bg"] = pygame.transform.scale(bg, (SCREEN_W, SCREEN_H))
+        print("[Assets] background.jpg loaded.")
+    except Exception as e:
+        print(f"[Assets] background.jpg not loaded: {e}")
+
+    # Spaceship — remove white background, rotate to fly right, scale
+    for ship_name in ("space_ship.png", "space_ship.jpg"):
+        ship_path = os.path.join(ui, ship_name)
+        if not os.path.exists(ship_path):
+            continue
+        try:
+            raw = pygame.image.load(ship_path).convert_alpha()
+            try:
+                # Fast numpy path: zero-out near-white pixels
+                px = pygame.surfarray.pixels3d(raw)
+                al = pygame.surfarray.pixels_alpha(raw)
+                near_white = (px[:, :, 0] > 230) & (px[:, :, 1] > 230) & (px[:, :, 2] > 230)
+                al[near_white] = 0
+                del px, al
+            except Exception:
+                # Fallback: simple colorkey (removes exact white)
+                raw.set_colorkey((255, 255, 255))
+            raw = pygame.transform.rotate(raw, -45)
+            ASSETS["ship"] = pygame.transform.smoothscale(raw, (SHIP_SIZE, SHIP_SIZE))
+            print(f"[Assets] {ship_name} loaded.")
+        except Exception as e:
+            print(f"[Assets] {ship_name} not loaded: {e}")
+        break
+
+
 def main():
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
     pygame.display.set_caption("Rehab Game")
     clock = pygame.time.Clock()
+
+    _load_assets()
 
     fonts = (
         pygame.font.SysFont("segoeui", 40, bold=True),
@@ -967,7 +1145,8 @@ def main():
                 context["selected_fingers"],
                 context["patient_name"],
                 current_scene.csv_path,
-                fonts)
+                fonts,
+                imu_rows=current_scene.imu_rows)
 
         elif scene_name == "level_b_game" and current_scene.done and space_pressed:
             scene_name    = "results_b"
