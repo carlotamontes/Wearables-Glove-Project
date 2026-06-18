@@ -31,6 +31,11 @@ BALL_RADIUS       = 14
 LEVEL_A_DURATION  = 20.0
 LEVEL_B_DURATION  = 30.0
 
+# Level A tunnel centre positions (aperture units, -1=fully closed, +1=fully open).
+# Bring in from ±1.0 so the patient doesn't need to reach the absolute extreme.
+LEVEL_A_OPEN_TARGET   =  0.7   # slightly below max-open
+LEVEL_A_CLOSED_TARGET = -0.7   # slightly above max-closed
+
 # Level B: (elapsed_s, tunnel_centre_aperture) waypoints, linearly interpolated
 LEVEL_B_WAYPOINTS = [
     (0,  0.0),   # neutral
@@ -527,7 +532,8 @@ class LevelAGameScene:
         self.patient_name     = patient_name
         self.selected_fingers = selected_fingers
         self.fonts            = fonts
-        self.tunnel_center_ap = 1.0 if target_pose == "open" else -1.0
+        self.tunnel_center_ap = (LEVEL_A_OPEN_TARGET if target_pose == "open"
+                                  else LEVEL_A_CLOSED_TARGET)
         self.elapsed          = 0.0
         self.done             = False
         self.data_rows        = []

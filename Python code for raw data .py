@@ -156,9 +156,10 @@ if __name__ == "__main__":
 
     # Channels to exclude from plotting (0-indexed)
     # Here: only channel index 5 (Channel 6) is plotted
-    exclude_channels = {0, 1, 2, 3,4,5, 6, 7,10, 11,12, 13, 14, 15, 16,17,18,19,20}
+    exclude_channels = {0, 1, 2, 3,4,5, 6, 7,8,9,10, 11,12, 13,17,18,19,20}
 
     #[9, 13, 5, 6, 10]  
+    # 15 16 17 IMU 
     # 11 nao funciona 
 
     # 1 4 5 9 10 
