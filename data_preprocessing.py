@@ -58,8 +58,8 @@ DEVICE_NAME_SUBSTRING  = "group8"   # partial match, case-insensitive
 CHARACTERISTIC_UUID    = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 # PCB channel numbers for each finger (thumb→pinky) and their payload positions.
-PCB_FINGER_CHANNELS    = [9, 13, 5, 6, 10]      # PCB channel labels, thumb to pinky
-FINGER_PAYLOAD_INDICES = [8, 12, 4, 5, 9]        # corresponding indices in the BLE payload
+PCB_FINGER_CHANNELS    = [9,  8, 5, 6, 10]      # PCB channel labels, thumb to pinky
+FINGER_PAYLOAD_INDICES = [8,  7, 4, 5,  9]        # corresponding indices in the BLE payload
 
 # IMU channels for tremor detection (ch15, ch16, ch17 → payload indices 14, 15, 16).
 IMU_PAYLOAD_INDICES    = [14, 15, 16]
@@ -222,10 +222,31 @@ class SensorProcessor:
 
         if self._calib_data.is_complete():
             self._calib_spans = np.abs(self._calib_data.open - self._calib_data.closed)
-            print("[Calibration] Complete.  Spans per finger (open-closed):")
+
+            FINGER_LABELS = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
+            MIN_SPAN = 20.0  # ADC units — below this the calibration is unreliable
+
+            print("[Calibration] Complete.  Per-finger diagnostic:")
+            any_bad = False
             for i, span in enumerate(self._calib_spans):
-                fi = self._selected_fingers[i] if i < len(self._selected_fingers) else i
-                print(f"  finger {fi}: span = {span:.1f}")
+                fi    = self._selected_fingers[i] if i < len(self._selected_fingers) else i
+                label = FINGER_LABELS[fi] if fi < len(FINGER_LABELS) else f"finger{fi}"
+                cl    = self._calib_data.closed[i]
+                ha    = self._calib_data.half[i]
+                op    = self._calib_data.open[i]
+                half_ok = (min(cl, op) <= ha <= max(cl, op))
+                warn  = "" if span >= MIN_SPAN else "  *** SPAN TOO SMALL — calibration unreliable ***"
+                if not half_ok:
+                    warn += "  *** HALF outside [closed,open] range — redo calibration ***"
+                print(f"  {label} (payload idx {FINGER_PAYLOAD_INDICES[fi]}): "
+                      f"closed={cl:.1f}  half={ha:.1f}  open={op:.1f}  span={span:.1f}{warn}")
+                if span < MIN_SPAN or not half_ok:
+                    any_bad = True
+
+            if any_bad:
+                print("[Calibration] WARNING: one or more fingers have poor calibration. "
+                      "Check the payload index mapping or redo calibration for those fingers.")
+
             with self._state_lock:
                 self._state.calibrated = True
             return True
@@ -372,18 +393,28 @@ class SensorProcessor:
         half_vec   = self._calib_data.half
         open_vec   = self._calib_data.open
 
+        MIN_SPAN = 20.0
+
         finger_apertures = []
         for i in range(self._n_fingers):
             v      = smoothed[i]
             v_cl   = closed_vec[i]
             v_half = half_vec[i]
             v_op   = open_vec[i]
+            span   = abs(v_op - v_cl)
 
-            # Per-finger calibrated clamp: hold at the calibration extreme
-            # instead of extrapolating past it.
-            v_lo = min(v_op, v_cl)
-            v_hi = max(v_op, v_cl)
-            v    = float(np.clip(v, v_lo, v_hi))
+            # Skip fingers with near-zero span — interpolation is meaningless
+            # and noise would produce random ±1 values.
+            if span < MIN_SPAN:
+                finger_apertures.append(0.0)
+                continue
+
+            # Clamp v_half to [v_lo, v_hi] so the piecewise branches stay
+            # monotone even if calibration captured a slightly wrong pose.
+            v_lo   = min(v_op, v_cl)
+            v_hi   = max(v_op, v_cl)
+            v_half = float(np.clip(v_half, v_lo, v_hi))
+            v      = float(np.clip(v, v_lo, v_hi))
 
             ap = _piecewise_interp(v, v_cl, v_half, v_op)
             finger_apertures.append(float(np.clip(ap, -1.0, 1.0)))

@@ -49,10 +49,10 @@ LEVEL_B_WAYPOINTS = [
 ]
 
 TREMOR_LOW_HZ  = 4.0
-TREMOR_HIGH_HZ = 7.0
+TREMOR_HIGH_HZ = 8.0
 
 FINGER_NAMES   = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
-PCB_CH_LABELS  = ["ch4",  "ch5",   "ch6",    "ch9",  "ch13"]
+PCB_CH_LABELS  = ["ch9",  "ch8",   "ch5",    "ch6",  "ch10"]
 IMU_NAMES      = ["ch15", "ch16", "ch17"]
 
 # ── Colours ────────────────────────────────────────────────────────────────────
@@ -472,9 +472,9 @@ class LevelASetupScreen:
 
 class CalibrationScreen:
     POSES = [
-        ("open",   "Fully OPEN hand",    C_ACCENT,  +1),
-        ("half",   "Half-open hand",     C_TUNNEL,   0),
         ("closed", "Make a tight FIST",  C_DANGER,  -1),
+        ("half",   "Half-open hand",     C_TUNNEL,   0),
+        ("open",   "Fully OPEN hand",    C_ACCENT,  +1),
     ]
 
     def __init__(self, processor, fonts):
