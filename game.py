@@ -173,17 +173,18 @@ def imu_tremor_analysis(imu_rows, sr=FPS, low=TREMOR_LOW_HZ, high=TREMOR_HIGH_HZ
 
     Returns a dict with:
         dominant_hz        – peak frequency in the tremor band (Hz)
+        global_peak_hz     – peak frequency across the full spectrum (Hz)
         band_power         – total spectral power in the tremor band
         relative_power_pct – band_power / total_power  (%)
         pct_time_tremor    – % of 1-s windows where >20% of power is in band
     """
     arr = np.array(imu_rows, dtype=float)   # (N, 3)
     if arr.ndim != 2 or arr.shape[1] < 3:
-        return dict(dominant_hz=0.0, band_power=0.0,
+        return dict(dominant_hz=0.0, global_peak_hz=0.0, band_power=0.0,
                     relative_power_pct=0.0, pct_time_tremor=0.0)
     N = arr.shape[0]
     if N < 32:
-        return dict(dominant_hz=0.0, band_power=0.0,
+        return dict(dominant_hz=0.0, global_peak_hz=0.0, band_power=0.0,
                     relative_power_pct=0.0, pct_time_tremor=0.0)
 
     arr -= arr.mean(axis=0)   # DC removal per axis
@@ -195,6 +196,8 @@ def imu_tremor_analysis(imu_rows, sr=FPS, low=TREMOR_LOW_HZ, high=TREMOR_HIGH_HZ
         power += np.abs(np.fft.rfft(arr[:, ch])) ** 2
 
     mask_band = (freqs >= low) & (freqs <= high)
+
+    global_peak_hz = float(freqs[np.argmax(power)])
 
     if mask_band.any() and power[mask_band].max() > 0:
         dominant_hz = float(freqs[mask_band][np.argmax(power[mask_band])])
@@ -229,6 +232,7 @@ def imu_tremor_analysis(imu_rows, sr=FPS, low=TREMOR_LOW_HZ, high=TREMOR_HIGH_HZ
 
     return dict(
         dominant_hz        = dominant_hz,
+        global_peak_hz     = global_peak_hz,
         band_power         = band_power,
         relative_power_pct = relative_pct,
         pct_time_tremor    = pct_time,
