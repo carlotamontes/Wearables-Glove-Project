@@ -56,18 +56,35 @@ PCB_CH_LABELS  = ["ch9",  "ch8",   "ch5",    "ch6",  "ch10"]
 IMU_NAMES      = ["ch15", "ch16", "ch17"]
 
 # ── Colours ────────────────────────────────────────────────────────────────────
-C_BG       = (15,  20,  30)
-C_PANEL    = (25,  32,  48)
-C_TEXT     = (220, 230, 240)
-C_DIM      = (100, 120, 140)
-C_ACCENT   = (50,  200, 150)
-C_DANGER   = (255,  80,  60)
-C_GOLD     = (255, 200,  60)
-C_TUNNEL   = (80,  180, 220)
-C_BTN      = (35,  48,  72)
-C_BTN_HOV  = (55,  75, 115)
-C_BTN_SEL  = (30,  110,  85)
-C_BAR_BG   = (40,  50,  70)
+# C_BG       = (15,  20,  30)
+# C_PANEL    = (25,  32,  48)
+# C_TEXT     = (220, 230, 240)
+# C_DIM      = (100, 120, 140)
+# C_ACCENT   = (50,  200, 150)
+# C_DANGER   = (255,  80,  60)
+# C_GOLD     = (255, 200,  60)
+# C_TUNNEL   = (80,  180, 220)
+# C_BTN      = (35,  48,  72)
+# C_BTN_HOV  = (55,  75, 115)
+# C_BTN_SEL  = (30,  110,  85)
+# C_BAR_BG   = (40,  50,  70)
+
+C_BG       = (12, 16, 24)        # darker background
+C_PANEL    = (24, 32, 48)
+
+C_TEXT     = (245, 248, 252)     # brighter text
+C_DIM      = (170, 185, 205)     # much easier to read
+
+C_ACCENT   = (0, 210, 170)       # vibrant teal
+C_DANGER   = (255, 95, 95)
+C_GOLD     = (255, 210, 80)
+C_TUNNEL   = (90, 200, 255)
+
+C_BTN      = (45, 60, 90)
+C_BTN_HOV  = (70, 95, 140)
+C_BTN_SEL  = (20, 140, 110)
+
+C_BAR_BG   = (55, 65, 90)
 
 # Loaded once in main(); draw helpers fall back gracefully if absent.
 ASSETS: dict = {}
@@ -241,8 +258,9 @@ def imu_tremor_analysis(imu_rows, sr=FPS, low=TREMOR_LOW_HZ, high=TREMOR_HIGH_HZ
 
 # ── Shared UI widgets ──────────────────────────────────────────────────────────
 
+
 class Button:
-    def __init__(self, rect, text, font, base_col=C_BTN, text_col=C_TEXT):
+    def __init__(self, rect, text, font, base_col=C_ACCENT, text_col=C_TEXT):
         self.rect     = pygame.Rect(rect)
         self.text     = text
         self.font     = font
@@ -284,7 +302,7 @@ class TextInput:
                 self.text += event.unicode
 
     def draw(self, surface):
-        border = C_ACCENT if self.active else C_DIM
+        border = C_ACCENT
         pygame.draw.rect(surface, C_PANEL, self.rect, border_radius=8)
         pygame.draw.rect(surface, border, self.rect, 2, border_radius=8)
         show  = self.text if self.text else self.placeholder
@@ -360,10 +378,10 @@ class HomeScreen:
     def __init__(self, fonts):
         fb, fm, fs = fonts
         self.fonts       = fonts
-        self.name_input  = TextInput((100, 230, 300, 44), fm, "Enter patient name")
-        self.btn_records = Button((100, 130, 450, 60), "Patient Records", fs)
-        self.btn_a       = Button((100,  320, 215, 76), "Game A", fm)
-        self.btn_b       = Button((335, 320, 215, 76), "Game B", fm)
+        self.name_input  = TextInput((100, 310, 450, 44), fm, "Enter patient name")
+        self.btn_records = Button((100, 210, 450, 60), "Patient Records", fm)
+        self.btn_a       = Button((100,  400, 215, 76), "Game A", fm)
+        self.btn_b       = Button((335, 400, 215, 76), "Game B", fm)
         self.hand        = HandDiagram(820, 390, fs)
         self.next_scene  = None
 
@@ -389,32 +407,32 @@ class HomeScreen:
 
         # Title
         title = fb.render("Rehab Game", True, C_ACCENT)
-        surface.blit(title, title.get_rect(center=(295, 62)))
+        surface.blit(title, title.get_rect(center=(325, 142)))
         sub = fs.render("Hand Rehabilitation Assessment System", True, C_DIM)
-        surface.blit(sub, sub.get_rect(center=(295, 98)))
+        surface.blit(sub, sub.get_rect(center=(325, 178)))
 
         self.btn_records.draw(surface)
 
         # Patient name
         lbl = fs.render("Patient Name", True, C_DIM)
-        surface.blit(lbl, (80, 200))
+        surface.blit(lbl, (100, 280))
         self.name_input.draw(surface)
 
         # Game buttons
-        lbl2 = fs.render("Select Game Mode:", True, C_DIM)
-        surface.blit(lbl2, (80, 290))
+        lbl2 = fs.render("Select Game Mode", True, C_DIM)
+        surface.blit(lbl2, (100, 370))
         self.btn_a.draw(surface)
         self.btn_b.draw(surface)
 
         da = fs.render("Tremor assessment  (20 s)", True, C_DIM)
         db = fs.render("Range of motion  (30 s)",   True, C_DIM)
-        surface.blit(da, (80,  402))
-        surface.blit(db, (315, 402))
+        surface.blit(da, (100,  482))
+        surface.blit(db, (335, 482))
 
         # Right panel
         rt = fm.render("Select Fingers", True, C_TEXT)
         surface.blit(rt, rt.get_rect(center=(820, 135)))
-        rh = fs.render("Click circles to toggle  |  PCB: ch4 ch5 ch6 ch9 ch13", True, C_DIM)
+        rh = fs.render("Click circles to toggle", True, C_DIM)
         surface.blit(rh, rh.get_rect(center=(820, 165)))
 
         self.hand.draw(surface)
@@ -430,7 +448,7 @@ class HomeScreen:
             surface.blit(warn, warn.get_rect(center=(820, 605)))
 
 
-# ── Level A setup ──────────────────────────────────────────────────────────────
+# ── Game A setup ──────────────────────────────────────────────────────────────
 
 class LevelASetupScreen:
     def __init__(self, fonts):
@@ -454,7 +472,7 @@ class LevelASetupScreen:
         draw_bg(surface)
         W, H = surface.get_size()
 
-        t = fb.render("Level A", True, C_ACCENT)
+        t = fb.render("Game A", True, C_ACCENT)
         surface.blit(t, t.get_rect(center=(W // 2, 80)))
 
         s = fm.render("Choose the target hand position for this session:", True, C_TEXT)
@@ -463,8 +481,8 @@ class LevelASetupScreen:
         self.btn_open.draw(surface)
         self.btn_closed.draw(surface)
 
-        do = fs.render("Patient holds hand OPEN  (ap = +1)", True, C_DIM)
-        dc = fs.render("Patient holds FIST closed  (ap = -1)", True, C_DIM)
+        do = fs.render("Patient holds hand OPEN", True, C_DIM)
+        dc = fs.render("Patient holds FIST closed", True, C_DIM)
         surface.blit(do, do.get_rect(center=(320, 375)))
         surface.blit(dc, dc.get_rect(center=(780, 375)))
 
@@ -774,7 +792,7 @@ class LevelBGameScene:
             mx = bar_x + int(t / total * bar_w)
             pygame.draw.line(surface, C_DIM, (mx, bar_y - 5), (mx, bar_y + 19), 1)
 
-        title = fm.render("Level B  -  Range of Motion", True, C_TEXT)
+        title = fm.render("Game B  -  Range of Motion", True, C_TEXT)
         surface.blit(title, (20, 14))
         tcol = C_DANGER if remaining < 5 else C_TEXT
         surface.blit(fs.render(f"{remaining:.1f}s remaining", True, tcol), (20, 48))
@@ -1051,8 +1069,8 @@ def main():
 
     fonts = (
         pygame.font.SysFont("segoeui", 40, bold=True),
-        pygame.font.SysFont("segoeui", 26),
-        pygame.font.SysFont("segoeui", 18),
+        pygame.font.SysFont("segoeui", 26, bold=True),
+        pygame.font.SysFont("segoeui", 18, bold=True),
     )
 
     processor = None
