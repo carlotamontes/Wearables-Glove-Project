@@ -58,8 +58,8 @@ DEVICE_NAME_SUBSTRING  = "group8"   # partial match, case-insensitive
 CHARACTERISTIC_UUID    = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 # PCB channel numbers for each finger (thumb→pinky) and their payload positions.
-PCB_FINGER_CHANNELS    = [9,  8, 5, 6, 10]      # PCB channel labels, thumb to pinky
-FINGER_PAYLOAD_INDICES = [8,  7, 4, 5,  9]        # corresponding indices in the BLE payload
+PCB_FINGER_CHANNELS    = [9,  13, 12, 6, 10]      # PCB channel labels, thumb to pinky
+FINGER_PAYLOAD_INDICES = [8,  12, 11, 5,  9]        # corresponding indices in the BLE payload
 
 # IMU channels for tremor detection (ch15, ch16, ch17 → payload indices 14, 15, 16).
 IMU_PAYLOAD_INDICES    = [14, 15, 16]
